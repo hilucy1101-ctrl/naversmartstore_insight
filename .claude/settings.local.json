@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npx shadcn@latest init --yes --defaults)",
-      "Bash(npx shadcn@latest add button input card table badge tabs)"
+      "Bash(npx shadcn@latest add button input card table badge tabs)",
+      "Bash(npx shadcn@latest add input card table badge tabs --yes)",
+      "Bash(taskkill *)"
     ]
   }
 }
