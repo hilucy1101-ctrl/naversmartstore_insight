@@ -1,38 +1,61 @@
 'use client'
 
-import { useState } from 'react'
-import { createBrowserSupabase } from '@/lib/supabase'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { createBrowserSupabase } from '@/lib/supabase-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState<'login' | 'signup'>('login')
   const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
+
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    if (searchParams.get('error') === 'auth_callback_failed') {
+      setError('이메일 인증에 실패했습니다. 다시 시도해주세요.')
+    }
+  }, [searchParams])
 
   const supabase = createBrowserSupabase()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    setMessage('')
+    setError('')
+    setInfo('')
 
     if (mode === 'login') {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) {
-        setMessage(error.message)
+        if (error.message.includes('Invalid login credentials')) {
+          setError('이메일 또는 비밀번호가 올바르지 않습니다.')
+        } else if (error.message.includes('Email not confirmed')) {
+          setError('이메일 인증이 필요합니다. 받은 편지함을 확인해주세요.')
+        } else {
+          setError(error.message)
+        }
       } else {
         window.location.href = '/'
       }
     } else {
       const { error } = await supabase.auth.signUp({ email, password })
       if (error) {
-        setMessage(error.message)
+        if (error.message.includes('User already registered')) {
+          setError('이미 가입된 이메일입니다. 로그인을 시도해주세요.')
+        } else if (error.message.includes('Password should be at least')) {
+          setError('비밀번호는 최소 6자 이상이어야 합니다.')
+        } else {
+          setError(error.message)
+        }
       } else {
-        setMessage('가입 확인 이메일을 보냈습니다. 이메일을 확인해주세요.')
+        setInfo('가입 확인 이메일을 보냈습니다. 받은 편지함을 확인하고 링크를 클릭해주세요.')
       }
     }
     setLoading(false)
@@ -56,7 +79,7 @@ export default function LoginPage() {
             />
             <Input
               type="password"
-              placeholder="비밀번호"
+              placeholder="비밀번호 (6자 이상)"
               value={password}
               onChange={e => setPassword(e.target.value)}
               required
@@ -66,20 +89,23 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          {message && (
-            <p className="mt-3 text-sm text-center text-muted-foreground">{message}</p>
+          {error && (
+            <p className="mt-3 text-sm text-center text-red-600 font-medium">{error}</p>
+          )}
+          {info && (
+            <p className="mt-3 text-sm text-center text-green-600 font-medium">{info}</p>
           )}
 
           <p className="mt-4 text-center text-sm">
             {mode === 'login' ? (
               <>계정이 없으신가요?{' '}
-                <button className="text-blue-600 hover:underline" onClick={() => setMode('signup')}>
+                <button className="text-blue-600 hover:underline" onClick={() => { setMode('signup'); setError(''); setInfo('') }}>
                   회원가입
                 </button>
               </>
             ) : (
               <>이미 계정이 있으신가요?{' '}
-                <button className="text-blue-600 hover:underline" onClick={() => setMode('login')}>
+                <button className="text-blue-600 hover:underline" onClick={() => { setMode('login'); setError(''); setInfo('') }}>
                   로그인
                 </button>
               </>
@@ -88,5 +114,13 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   )
 }

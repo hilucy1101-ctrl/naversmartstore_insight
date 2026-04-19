@@ -45,7 +45,7 @@ export async function fetchNaverShoppingApi(
     )
   }
 
-  const display = Math.min(topN * 3, 100)
+  const display = 100 // 카탈로그 제외 후 topN개 확보를 위해 최대치 요청
   const url = `https://openapi.naver.com/v1/search/shop.json?query=${encodeURIComponent(keyword)}&display=${display}&sort=sim`
 
   const res = await fetch(url, {
@@ -66,31 +66,41 @@ export async function fetchNaverShoppingApi(
     return []
   }
 
+  // 가격비교 카탈로그 묶음 제외 (개별 상품 페이지만 유지):
+  // 1) productType !== '2' → 다수 판매처 묶음 카탈로그 제외
+  // 2) link에 /catalog/ 없음 → 카탈로그 URL 상품 추가 제외
+  // 브랜드 공식 스토어(brand.naver.com)는 개별 상품이므로 포함
+  const isIndividualProduct = (item: NaverShopItem) =>
+    item.productType !== '2' &&
+    !item.link.includes('/catalog/')
+
+  const individualItems = data.items.filter(isIndividualProduct)
+
+  console.log(`[NaverAPI] 전체 ${data.items.length}개 → 카탈로그 제외 후 ${individualItems.length}개`)
+  console.log('[NaverAPI] 제외 샘플:', data.items.filter(i => !isIndividualProduct(i)).slice(0, 3).map(i => ({
+    type: i.productType, mall: i.mallName, link: i.link.slice(0, 60)
+  })))
+
   let effectiveRank = 0
-  const result: ScrapedProduct[] = data.items.map((item, index) => {
+  const result: ScrapedProduct[] = individualItems.slice(0, topN).map((item, index) => {
     const title = stripHtml(item.title)
-    // productType=2 → 다수 판매처 카탈로그 묶음 상품 → 제외 대상
-    // productType=1 → 개별 셀러 상품 (스마트스토어 등) → 분석 대상
-    const isCatalog = item.productType === '2'
     const price = item.lprice ? parseInt(item.lprice, 10) : null
-    if (!isCatalog) effectiveRank++
+    effectiveRank++
 
     return {
       originalRank: index + 1,
-      effectiveRank: isCatalog ? null : effectiveRank,
+      effectiveRank,
       title,
       price,
       reviewCount: 0,
       rating: null,
-      sellerCount: isCatalog ? 2 : 1,
+      sellerCount: 1,
       shippingBenefit: '',
       thumbnailUrl: item.image,
       productUrl: item.link,
       isAd: false,
-      isCatalog,
-      exclusionReason: isCatalog
-        ? `카탈로그 묶음 상품 (다수 판매처)`
-        : null,
+      isCatalog: false,
+      exclusionReason: null,
       rawPayload: {
         mallName: item.mallName,
         productId: item.productId,
@@ -102,7 +112,7 @@ export async function fetchNaverShoppingApi(
     }
   })
 
-  return result.slice(0, topN)
+  return result
 }
 
 // API 키 없을 때 데모용 mock 데이터
