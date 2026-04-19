@@ -66,51 +66,77 @@ export async function fetchNaverShoppingApi(
     return []
   }
 
-  // 가격비교 카탈로그 묶음 제외 (개별 상품 페이지만 유지):
-  // 1) productType !== '2' → 다수 판매처 묶음 카탈로그 제외
-  // 2) link에 /catalog/ 없음 → 카탈로그 URL 상품 추가 제외
+  // 카탈로그(묶음) 판별:
+  // - productType === '2': 다수 판매처 묶음
+  // - link에 /catalog/ 포함: 카탈로그 URL
   // 브랜드 공식 스토어(brand.naver.com)는 개별 상품이므로 포함
-  const isIndividualProduct = (item: NaverShopItem) =>
-    item.productType !== '2' &&
-    !item.link.includes('/catalog/')
+  const isCatalogItem = (item: NaverShopItem) =>
+    item.productType === '2' || item.link.includes('/catalog/')
 
-  const individualItems = data.items.filter(isIndividualProduct)
-
-  console.log(`[NaverAPI] 전체 ${data.items.length}개 → 카탈로그 제외 후 ${individualItems.length}개`)
-  console.log('[NaverAPI] 제외 샘플:', data.items.filter(i => !isIndividualProduct(i)).slice(0, 3).map(i => ({
-    type: i.productType, mall: i.mallName, link: i.link.slice(0, 60)
-  })))
-
+  // 전체 API 결과를 순서대로 순회하며 originalRank를 보존
+  // 카탈로그는 제거하지 않고 isCatalog: true로 포함 → 비율 통계에 반영
+  // effectiveRank는 일반 상품(개별 셀러)에만 부여
   let effectiveRank = 0
-  const result: ScrapedProduct[] = individualItems.slice(0, topN).map((item, index) => {
-    const title = stripHtml(item.title)
-    const price = item.lprice ? parseInt(item.lprice, 10) : null
-    effectiveRank++
+  let individualCount = 0
+  const result: ScrapedProduct[] = []
 
-    return {
-      originalRank: index + 1,
-      effectiveRank,
-      title,
-      price,
-      reviewCount: 0,
-      rating: null,
-      sellerCount: 1,
-      shippingBenefit: '',
-      thumbnailUrl: item.image,
-      productUrl: item.link,
-      isAd: false,
-      isCatalog: false,
-      exclusionReason: null,
-      rawPayload: {
-        mallName: item.mallName,
-        productId: item.productId,
-        productType: item.productType,
-        brand: item.brand,
-        maker: item.maker,
-        category: [item.category1, item.category2, item.category3, item.category4].filter(Boolean).join(' > '),
-      },
+  for (let i = 0; i < data.items.length; i++) {
+    const item = data.items[i]
+    const isCatalog = isCatalogItem(item)
+    const originalRank = i + 1
+
+    const rawPayload = {
+      mallName: item.mallName,
+      productId: item.productId,
+      productType: item.productType,
+      brand: item.brand,
+      maker: item.maker,
+      category: [item.category1, item.category2, item.category3, item.category4].filter(Boolean).join(' > '),
     }
-  })
+
+    if (!isCatalog) {
+      individualCount++
+      if (individualCount > topN) break // topN개 일반 상품 확보 후 중단
+      effectiveRank++
+      result.push({
+        originalRank,
+        effectiveRank,
+        title: stripHtml(item.title),
+        price: item.lprice ? parseInt(item.lprice, 10) : null,
+        reviewCount: 0,
+        rating: null,
+        sellerCount: 1,
+        shippingBenefit: '',
+        thumbnailUrl: item.image,
+        productUrl: item.link,
+        isAd: false,
+        isCatalog: false,
+        exclusionReason: null,
+        rawPayload,
+      })
+    } else {
+      // 카탈로그 상품도 결과에 포함 — 광고/카탈로그 비율 계산에 필요
+      result.push({
+        originalRank,
+        effectiveRank: null,
+        title: stripHtml(item.title),
+        price: item.lprice ? parseInt(item.lprice, 10) : null,
+        reviewCount: 0,
+        rating: null,
+        sellerCount: item.productType === '2' ? 3 : 1,
+        shippingBenefit: '',
+        thumbnailUrl: item.image,
+        productUrl: item.link,
+        isAd: false,
+        isCatalog: true,
+        exclusionReason: '카탈로그 묶음',
+        rawPayload,
+      })
+    }
+  }
+
+  // originalRank 순서(1위→N위) 정렬
+  result.sort((a, b) => a.originalRank - b.originalRank)
 
   return result
 }

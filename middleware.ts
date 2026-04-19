@@ -25,14 +25,17 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl
 
+  const publicPaths = ['/login', '/signup', '/auth']
+  const isPublicPath = publicPaths.some(p => pathname.startsWith(p))
+
   // 비로그인 상태에서 보호된 경로 접근 시 로그인 페이지로
-  if (!user && !pathname.startsWith('/login') && !pathname.startsWith('/auth')) {
+  if (!user && !isPublicPath) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // 이미 로그인한 상태에서 로그인 페이지 접근 시 대시보드로
-  if (user && pathname === '/login') {
-    return NextResponse.redirect(new URL('/', request.url))
+  // 이미 로그인한 상태에서 로그인/회원가입 페이지 접근 시 대시보드로
+  if (user && (pathname === '/login' || pathname === '/signup')) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return supabaseResponse

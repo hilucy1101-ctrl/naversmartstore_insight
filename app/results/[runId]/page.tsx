@@ -136,7 +136,7 @@ export default function ResultsPage() {
 
         {/* 페이지 헤더 */}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold">"{run?.keyword}" 분석 결과</h1>
+          <h1 className="text-2xl font-bold">&quot;{run?.keyword}&quot; 분석 결과</h1>
           <p className="text-muted-foreground text-sm mt-1">
             전체 {products.length}개 수집 → 광고 {adCount}개 · 카탈로그 {catalogCount}개 제외 → 일반 셀러 {normalProducts.length}개
           </p>

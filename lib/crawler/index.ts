@@ -1,4 +1,5 @@
-import { fetchNaverShoppingApi, getMockProducts } from './naver-api'
+import { scrapeNaverShoppingPage } from './playwright-scraper'
+import { getMockProducts } from './naver-api'
 
 export interface ScrapedProduct {
   originalRank: number
@@ -21,13 +22,13 @@ export async function crawlNaverPriceComparison(
   keyword: string,
   topN: number = 10
 ): Promise<{ products: ScrapedProduct[]; isDemoMode: boolean }> {
-  const hasApiKeys = !!(process.env.NAVER_CLIENT_ID && process.env.NAVER_CLIENT_SECRET)
-
-  if (!hasApiKeys) {
-    // API 키 없을 때 데모 데이터로 UI 테스트 가능하게 함
+  try {
+    const products = await scrapeNaverShoppingPage(keyword, topN)
+    return { products, isDemoMode: false }
+  } catch (error) {
+    // 스크래핑 실패 시 데모 데이터로 폴백
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[crawler] Playwright 스크래핑 실패, 데모 모드로 폴백: ${message}`)
     return { products: getMockProducts(keyword, topN), isDemoMode: true }
   }
-
-  const products = await fetchNaverShoppingApi(keyword, topN)
-  return { products, isDemoMode: false }
 }

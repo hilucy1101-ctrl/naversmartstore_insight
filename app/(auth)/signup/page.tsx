@@ -1,43 +1,45 @@
 'use client'
 
-import { useState, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createBrowserSupabase } from '@/lib/supabase-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 
-function LoginForm() {
+export default function SignupPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
   const router = useRouter()
-  const searchParams = useSearchParams()
-
-  const initError = searchParams.get('error') === 'auth_callback_failed'
-    ? '이메일 인증에 실패했습니다. 다시 시도해주세요.'
-    : ''
-  const [error, setError] = useState(initError)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError('')
+    setInfo('')
 
     const supabase = createBrowserSupabase()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
+    })
 
     if (error) {
-      if (error.message.includes('Invalid login credentials')) {
-        setError('이메일 또는 비밀번호가 올바르지 않습니다.')
-      } else if (error.message.includes('Email not confirmed')) {
-        setError('이메일 인증이 필요합니다. 받은 편지함을 확인해주세요.')
+      if (error.message.includes('User already registered')) {
+        setError('이미 가입된 이메일입니다. 로그인을 시도해주세요.')
+      } else if (error.message.includes('Password should be at least')) {
+        setError('비밀번호는 최소 6자 이상이어야 합니다.')
       } else {
         setError(error.message)
       }
     } else {
-      router.refresh()
-      router.push('/dashboard')
+      setInfo('가입 확인 이메일을 보냈습니다. 받은 편지함을 확인하고 링크를 클릭해주세요.')
     }
 
     setLoading(false)
@@ -48,7 +50,7 @@ function LoginForm() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">PriceRank AI</CardTitle>
-          <CardDescription>네이버 가격비교 상위노출 분석 서비스</CardDescription>
+          <CardDescription>새 계정 만들기</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -58,44 +60,39 @@ function LoginForm() {
               value={email}
               onChange={e => setEmail(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || !!info}
             />
             <Input
               type="password"
-              placeholder="비밀번호"
+              placeholder="비밀번호 (6자 이상)"
               value={password}
               onChange={e => setPassword(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || !!info}
             />
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? '로그인 중...' : '로그인'}
+            <Button type="submit" className="w-full" disabled={loading || !!info}>
+              {loading ? '처리 중...' : '회원가입'}
             </Button>
           </form>
 
           {error && (
             <p className="mt-3 text-sm text-center text-red-600 font-medium">{error}</p>
           )}
+          {info && (
+            <p className="mt-3 text-sm text-center text-green-600 font-medium">{info}</p>
+          )}
 
           <p className="mt-4 text-center text-sm text-gray-600">
-            계정이 없으신가요?{' '}
+            이미 계정이 있으신가요?{' '}
             <button
               className="text-blue-600 hover:underline font-medium"
-              onClick={() => router.push('/signup')}
+              onClick={() => router.push('/login')}
             >
-              회원가입
+              로그인
             </button>
           </p>
         </CardContent>
       </Card>
     </div>
-  )
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense>
-      <LoginForm />
-    </Suspense>
   )
 }
