@@ -1,15 +1,13 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { chromium, type Browser, type Response as PlaywrightResponse } from 'playwright'
+import OpenAI from 'openai'
 
 export interface ProductDetailAnalysis {
-  // 기본 정보 (API에서)
   productName: string
   consumerPrice: number | null
   discountRate: number | null
   titleLength: number
   thumbnailUrl: string
   productUrl: string
-
-  // 스크래핑 데이터
   registrationDate: string | null
   thumbnailCount: number | null
   videoCount: number | null
@@ -25,8 +23,6 @@ export interface ProductDetailAnalysis {
   recentSixMonthReviews: number | null
   reviewPoints: string | null
   relatedTags: string[]
-
-  // AI 분석
   titleStructure: string | null
   coreKeyword: string | null
   subKeywords: string[]
@@ -72,13 +68,11 @@ function parseSmartStoreNextData(nextData: Record<string, unknown>): Partial<Pag
 
   const result: Partial<PageData> = {}
 
-  // 상품 등록일
   const productDetail = state.product?.A ?? state.productInfo ?? state.product
   if (productDetail) {
     const regDate = productDetail.registrationDate ?? productDetail.saleStartDate
     if (regDate) result.registrationDate = String(regDate).slice(0, 10)
 
-    // 옵션 개수
     const options =
       productDetail.optionInfo?.optionCombinations ??
       productDetail.options ??
@@ -86,7 +80,6 @@ function parseSmartStoreNextData(nextData: Record<string, unknown>): Partial<Pag
     if (Array.isArray(options)) result.optionCount = options.length
   }
 
-  // 리뷰 정보
   const reviewSummary = state.reviewSummary ?? state.review?.summary
   if (reviewSummary) {
     result.totalReviews = reviewSummary.totalReviewCount ?? reviewSummary.count ?? null
@@ -96,7 +89,6 @@ function parseSmartStoreNextData(nextData: Record<string, unknown>): Partial<Pag
     result.recentSixMonthReviews = reviewSummary.recentReviewCount ?? null
   }
 
-  // 관련 태그
   const tags = state.product?.A?.representativeSectionTag ?? state.tags ?? []
   if (Array.isArray(tags)) {
     result.relatedTags = tags
@@ -107,71 +99,177 @@ function parseSmartStoreNextData(nextData: Record<string, unknown>): Partial<Pag
   return result
 }
 
-async function scrapeProductPage(url: string): Promise<Partial<PageData>> {
+// XHR 인터셉션으로 획득한 API 응답 파싱
+function parseInterceptedApis(
+  productApi: Record<string, unknown> | null,
+  reviewApi: Record<string, unknown> | null,
+): Partial<PageData> {
+  const result: Partial<PageData> = {}
+
+  if (productApi) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = productApi as any
+    const origin =
+      d?.product?.originProduct ??
+      d?.originProduct ??
+      d?.product ??
+      d
+
+    const saleStart =
+      origin?.saleStartDate ??
+      origin?.registrationDate ??
+      origin?.channelProduct?.saleStartDate
+    if (saleStart) result.registrationDate = String(saleStart).slice(0, 10)
+
+    const optCombinations =
+      origin?.productOption?.optionCombinations ??
+      origin?.optionInfo?.optionCombinations ??
+      []
+    if (Array.isArray(optCombinations)) result.optionCount = optCombinations.length
+
+    const images = origin?.productImages ?? d?.product?.productImages ?? []
+    if (Array.isArray(images) && images.length > 0) result.thumbnailCount = images.length
+
+    const tags =
+      origin?.productTag ??
+      origin?.representativeSectionTag ??
+      d?.productTag ??
+      []
+    if (Array.isArray(tags)) {
+      result.relatedTags = tags
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((t: any) => String(t.tagName ?? t.name ?? t))
+        .filter((s: string) => s && s !== '[object Object]')
+    }
+  }
+
+  if (reviewApi) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = reviewApi as any
+    const stats = r?.reviewStatistics ?? r?.statistics ?? r?.data ?? r
+
+    result.totalReviews = stats?.totalReviewCount ?? stats?.totalCount ?? null
+    result.reviewRating = stats?.averageReviewScore ?? stats?.avgScore ?? null
+    result.photoVideoReviews = stats?.imageReviewCount ?? stats?.photoCount ?? null
+    result.recentSixMonthRating = stats?.recentAverageReviewScore ?? null
+    result.recentSixMonthReviews = stats?.recentReviewCount ?? null
+    if (stats?.reviewPointInfo) result.reviewPoints = String(stats.reviewPointInfo)
+  }
+
+  return result
+}
+
+// 두 PageData를 병합: override의 non-null 값으로 base를 덮음
+function mergePageData(base: Partial<PageData>, override: Partial<PageData>): Partial<PageData> {
+  const result = { ...base }
+  for (const key of Object.keys(override) as (keyof PageData)[]) {
+    const val = override[key]
+    if (val !== null && val !== undefined && !(Array.isArray(val) && val.length === 0)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(result as any)[key] = val
+    }
+  }
+  return result
+}
+
+const BROWSER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-blink-features=AutomationControlled',
+]
+
+const CONTEXT_OPTIONS = {
+  userAgent:
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  locale: 'ko-KR',
+  extraHTTPHeaders: { 'Accept-Language': 'ko-KR,ko;q=0.9' },
+}
+
+// Playwright로 상품 페이지 접속 + XHR 인터셉션 + __NEXT_DATA__ 파싱
+async function scrapeWithPlaywright(browser: Browser, url: string): Promise<Partial<PageData>> {
   if (!url || !url.startsWith('http')) return {}
 
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'ko-KR,ko;q=0.9',
-      },
-      signal: AbortSignal.timeout(10000),
-    })
+  const context = await browser.newContext(CONTEXT_OPTIONS)
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false })
+  })
 
-    if (!res.ok) return {}
+  const page = await context.newPage()
 
-    const html = await res.text()
-    const result: Partial<PageData> = {}
+  let productApiData: Record<string, unknown> | null = null
+  let reviewApiData: Record<string, unknown> | null = null
 
-    // __NEXT_DATA__ 파싱 (Smartstore / Brand Store)
-    const nextData = extractNextData(html)
-    if (nextData) {
-      Object.assign(result, parseSmartStoreNextData(nextData))
+  const onResponse = async (response: PlaywrightResponse) => {
+    if (response.status() !== 200) return
+    const respUrl = response.url()
+
+    const isNaverStore =
+      respUrl.includes('smartstore.naver.com') || respUrl.includes('brand.naver.com')
+    if (!isNaverStore) return
+
+    try {
+      const ct = response.headers()['content-type'] ?? ''
+      if (!ct.includes('json')) return
+
+      const json = (await response.json()) as Record<string, unknown>
+
+      // 상품 상세 API: /products/{숫자} 패턴이고 review 아닌 경우
+      if (/\/products\/\d+/.test(respUrl) && !/review/i.test(respUrl)) {
+        productApiData = json
+      }
+      // 리뷰 API
+      else if (/\/review/i.test(respUrl)) {
+        reviewApiData = json
+      }
+    } catch {
+      // JSON 파싱 실패 무시
     }
+  }
 
-    // 텍스트 기반 키워드 검색
+  page.on('response', onResponse)
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+
+    // networkidle 또는 8초 타임아웃 중 먼저 완료되는 쪽 대기
+    await Promise.race([
+      page.waitForLoadState('networkidle').catch(() => {}),
+      new Promise<void>(resolve => setTimeout(resolve, 8000)),
+    ])
+
+    const html = await page.content()
+    const nextData = extractNextData(html)
+    const fromNextData = nextData ? parseSmartStoreNextData(nextData) : {}
+    const fromApi = parseInterceptedApis(productApiData, reviewApiData)
+
+    // 텍스트 기반 boolean 필드 보완
     const bodyText = html.replace(/<[^>]+>/g, ' ')
-
-    result.hasNotificationCoupon = bodyText.includes('알림쿠폰')
-    result.hasGift = bodyText.includes('사은품')
+    const textData: Partial<PageData> = {
+      hasNotificationCoupon: bodyText.includes('알림쿠폰'),
+      hasGift: bodyText.includes('사은품'),
+      hasEvent: /기획전|이벤트할인|특가|타임세일|flash\s*sale/i.test(bodyText),
+    }
 
     const gradeMatch = bodyText.match(/등급\s*혜택[^.。\n]{0,100}/)
-    result.gradeBenefits = gradeMatch ? gradeMatch[0].trim().slice(0, 100) : null
+    if (gradeMatch) textData.gradeBenefits = gradeMatch[0].trim().slice(0, 100)
 
-    result.hasEvent = /기획전|이벤트할인|특가|타임세일|flash\s*sale/i.test(bodyText)
+    const pointMatch = bodyText.match(/리뷰\s*작성시?\s*[^\n.。]{0,40}적립/)
+    textData.reviewPoints = pointMatch ? pointMatch[0].trim() : null
 
-    // 썸네일 개수 (갤러리 슬라이드 기준)
-    if (result.thumbnailCount == null) {
+    // 썸네일/영상 개수 HTML 기반 보완
+    if (!fromApi.thumbnailCount && !fromNextData.thumbnailCount) {
       const imgSlides = html.match(/swiper-slide|product-image|_thumbnail/gi)
-      result.thumbnailCount = imgSlides ? Math.min(imgSlides.length, 20) : null
+      textData.thumbnailCount = imgSlides ? Math.min(imgSlides.length, 20) : null
     }
+    const videoMatches = html.match(/<video|youtube\.com\/embed|player\.vimeo/gi)
+    textData.videoCount = videoMatches ? videoMatches.length : 0
 
-    // 영상 개수
-    if (result.videoCount == null) {
-      const videoMatches = html.match(/<video|youtube\.com\/embed|player\.vimeo/gi)
-      result.videoCount = videoMatches ? videoMatches.length : 0
-    }
-
-    // 리뷰 적립금
-    if (!result.reviewPoints) {
-      const pointMatch = bodyText.match(/리뷰\s*작성시?\s*[^\n.。]{0,40}적립/)
-      result.reviewPoints = pointMatch ? pointMatch[0].trim() : null
-    }
-
-    // 관련 태그 (해시태그)
-    if (!result.relatedTags || result.relatedTags.length === 0) {
-      const tagMatches = html.match(/#([가-힣a-zA-Z0-9_]{2,20})/g)
-      result.relatedTags = tagMatches
-        ? [...new Set(tagMatches.map(t => t.slice(1)))].slice(0, 10)
-        : []
-    }
-
-    return result
+    return mergePageData(mergePageData(fromNextData, fromApi), textData)
   } catch {
     return {}
+  } finally {
+    page.off('response', onResponse)
+    await context.close()
   }
 }
 
@@ -180,12 +278,16 @@ async function analyzeMultipleWithAI(
   titles: string[]
 ): Promise<Array<{ titleStructure: string; coreKeyword: string; subKeywords: string[] }>> {
   const defaultResult = { titleStructure: '', coreKeyword: keyword, subKeywords: [] as string[] }
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
-    return titles.map(() => ({ titleStructure: '분석 불가 (API 키 없음)', coreKeyword: keyword, subKeywords: [] }))
+    return titles.map(() => ({
+      titleStructure: '분석 불가 (API 키 없음)',
+      coreKeyword: keyword,
+      subKeywords: [],
+    }))
   }
 
-  const client = new Anthropic({ apiKey })
+  const client = new OpenAI({ apiKey })
   const titlesText = titles.map((t, i) => `${i + 1}. "${t}"`).join('\n')
 
   const prompt = `아래 네이버 쇼핑 상품명들을 분석해주세요.
@@ -195,33 +297,47 @@ async function analyzeMultipleWithAI(
 상품명 목록:
 ${titlesText}
 
-각 상품명에 대해 순서대로 JSON 배열로만 응답하세요 (다른 텍스트 없이):
-[
-  {
-    "titleStructure": "브랜드명/재질/카테고리명/단수/옵션명/서브키워드/핵심키워드 순서로 실제 구조 설명 (예: 브랜드없음 / 스테인리스 / 프라이팬 / 1개 / 28cm인덕션 / 무코팅친환경 / 프라이팬)",
-    "coreKeyword": "실제 고객이 검색 시 입력할 핵심 키워드 1~2단어",
-    "subKeywords": ["핵심키워드 외 고객이 검색할 만한 키워드 3~5개"]
-  }
-]`
+[분석 규칙]
+- 상품명 구조: 브랜드명 / 재질 / 카테고리명 / 단수 / 옵션명 / 서브키워드 / 핵심키워드 순서로 구성 요소를 ' / ' 구분자로 나열
+- 해당 구성 요소가 없으면 해당 항목은 생략
+- 핵심키워드: 실제 고객이 검색 시 입력한 키워드 (검색 키워드와 동일하거나 가장 근접한 단어)
+- 서브키워드: 핵심키워드 외 고객이 검색할 만한 키워드 3~5개
+
+다음 JSON 형식으로 응답하세요:
+{
+  "analyses": [
+    {
+      "titleStructure": "쉐프원 / 스테인리스 / 프라이팬 / 1개 / 24cm인덕션 / 무코팅친환경 / 스텐프라이팬",
+      "coreKeyword": "스텐프라이팬",
+      "subKeywords": ["인덕션프라이팬", "스테인리스팬", "무코팅팬"]
+    }
+  ]
+}`
 
   try {
-    const msg = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
       max_tokens: Math.min(4096, 200 * titles.length),
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        {
+          role: 'system',
+          content: '당신은 네이버 쇼핑 상품명 구조를 분석하는 전문가입니다. 반드시 {"analyses": [...]} 형식의 JSON으로만 응답하세요.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      response_format: { type: 'json_object' },
     })
 
-    const text = msg.content[0].type === 'text' ? msg.content[0].text : ''
-    const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0])
-      if (Array.isArray(parsed) && parsed.length === titles.length) {
-        return parsed.map(p => ({
-          titleStructure: p.titleStructure ?? '',
-          coreKeyword: p.coreKeyword ?? keyword,
-          subKeywords: Array.isArray(p.subKeywords) ? p.subKeywords : [],
-        }))
-      }
+    const text = response.choices[0]?.message?.content ?? ''
+    const parsed = JSON.parse(text)
+    const arr = parsed.analyses
+
+    if (Array.isArray(arr) && arr.length === titles.length) {
+      return arr.map(p => ({
+        titleStructure: p.titleStructure ?? '',
+        coreKeyword: p.coreKeyword ?? keyword,
+        subKeywords: Array.isArray(p.subKeywords) ? p.subKeywords : [],
+      }))
     }
   } catch {
     // AI 실패 시 기본값 반환
@@ -263,20 +379,34 @@ function buildProductDetailResult(
   }
 }
 
-// 여러 상품 한 번에 분석: 페이지 스크래핑 병렬 + AI 배치 1회 호출
+// 브라우저 1회 실행, 3개씩 병렬 스크래핑
 export async function analyzeMultipleProductDetails(
   keyword: string,
   products: Array<{ title: string; price: number | null; thumbnailUrl: string; productUrl: string }>
 ): Promise<ProductDetailAnalysis[]> {
-  const [pageDataResults, aiResults] = await Promise.all([
-    Promise.allSettled(products.map(p => scrapeProductPage(p.productUrl))),
-    analyzeMultipleWithAI(keyword, products.map(p => p.title)),
-  ])
+  const browser = await chromium.launch({ headless: true, args: BROWSER_ARGS })
+  const pageDataResults: Partial<PageData>[] = []
 
-  return products.map((product, i) => {
-    const pageData = pageDataResults[i].status === 'fulfilled' ? pageDataResults[i].value : {}
-    return buildProductDetailResult(product, pageData, aiResults[i])
-  })
+  try {
+    const BATCH_SIZE = 3
+    for (let i = 0; i < products.length; i += BATCH_SIZE) {
+      const batch = products.slice(i, i + BATCH_SIZE)
+      const batchResults = await Promise.allSettled(
+        batch.map(p => scrapeWithPlaywright(browser, p.productUrl))
+      )
+      pageDataResults.push(
+        ...batchResults.map(r => (r.status === 'fulfilled' ? r.value : {}))
+      )
+    }
+  } finally {
+    await browser.close()
+  }
+
+  const aiResults = await analyzeMultipleWithAI(keyword, products.map(p => p.title))
+
+  return products.map((product, i) =>
+    buildProductDetailResult(product, pageDataResults[i] ?? {}, aiResults[i])
+  )
 }
 
 export async function analyzeProductDetail(
