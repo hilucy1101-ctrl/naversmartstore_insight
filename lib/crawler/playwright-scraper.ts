@@ -61,25 +61,19 @@ export async function scrapeNaverShoppingPage(
 
     const page = await context.newPage()
 
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
 
-    // 상품 목록 컨테이너 대기 (다중 폴백 셀렉터)
     const containerSelectors = [
       '[id^="listProductInfo"]',
       'li[class*="product_item"]',
       'li[class*="_item"]',
     ]
 
-    let containerFound = false
-    for (const sel of containerSelectors) {
-      try {
-        await page.waitForSelector(sel, { timeout: 15_000 })
-        containerFound = true
-        break
-      } catch {
-        // 다음 셀렉터 시도
-      }
-    }
+    const containerFound = await Promise.any(
+      containerSelectors.map(sel =>
+        page.waitForSelector(sel, { timeout: 10_000 })
+      )
+    ).then(() => true).catch(() => false)
 
     if (!containerFound) {
       throw new Error('상품 목록 컨테이너를 찾을 수 없습니다.')

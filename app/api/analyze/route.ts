@@ -128,22 +128,16 @@ export async function GET(req: NextRequest) {
   const runId = req.nextUrl.searchParams.get('runId')
   if (!runId) return NextResponse.json({ error: 'runId 필요' }, { status: 400 })
 
-  const { data: products } = await supabase
-    .from('scraped_products')
-    .select('*')
-    .eq('run_id', runId)
-    .order('original_rank')
-
-  const { data: run } = await supabase
-    .from('analysis_runs')
-    .select('*, projects(keyword, title)')
-    .eq('id', runId)
-    .single()
-
-  const { data: recs } = await supabase
-    .from('title_recommendations')
-    .select('*')
-    .eq('run_id', runId)
+  // 3개 쿼리 병렬 실행 (순차 대비 ~200ms 단축)
+  const [
+    { data: products },
+    { data: run },
+    { data: recs },
+  ] = await Promise.all([
+    supabase.from('scraped_products').select('*').eq('run_id', runId).order('original_rank'),
+    supabase.from('analysis_runs').select('*, projects(keyword, title)').eq('id', runId).single(),
+    supabase.from('title_recommendations').select('*').eq('run_id', runId),
+  ])
 
   return NextResponse.json({ run, products, recommendations: recs })
 }

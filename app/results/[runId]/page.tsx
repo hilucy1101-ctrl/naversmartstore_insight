@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Input } from '@/components/ui/input'
+import { ProductAnalysisTable } from '@/components/ProductAnalysisTable'
+import type { ProductDetailAnalysis } from '@/lib/analyzer/product-detail-scraper'
 
 interface Product {
   id: string
@@ -56,13 +58,61 @@ export default function ResultsPage() {
   const [run, setRun] = useState<Run | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
-  const [showExcluded, setShowExcluded] = useState(false)
+  const [showAds, setShowAds] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) { next.delete(id) } else { next.add(id) }
+      return next
+    })
+  }
 
   const [recInput, setRecInput] = useState({
     currentTitle: '', brandName: '', features: '', material: '', sellingPoints: '',
   })
   const [recLoading, setRecLoading] = useState(false)
+
+  // 2단계 분석 상태
+  type AnalysisResult = ProductDetailAnalysis & { id: string; error?: string }
+  const [step2Analyses, setStep2Analyses] = useState<AnalysisResult[]>([])
+  const [step2Loading, setStep2Loading] = useState(false)
+  const [step2Error, setStep2Error] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState('products')
+
+  async function handleStep2() {
+    if (selectedIds.size === 0) return
+    setStep2Loading(true)
+    setStep2Error(null)
+
+    const selected = products.filter(p => selectedIds.has(p.id))
+    try {
+      const res = await fetch('/api/product-detail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword: run?.keyword ?? '',
+          products: selected.map(p => ({
+            id: p.id,
+            title: p.title,
+            price: p.price,
+            thumbnailUrl: p.thumbnail_url,
+            productUrl: p.product_url,
+          })),
+        }),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setStep2Analyses(data.analyses)
+      setActiveTab('step2')
+    } catch (e) {
+      setStep2Error(e instanceof Error ? e.message : '분석 실패')
+    } finally {
+      setStep2Loading(false)
+    }
+  }
 
   useEffect(() => {
     fetch(`/api/analyze?runId=${runId}`)
@@ -96,7 +146,8 @@ export default function ResultsPage() {
     )
   }
 
-  const displayProducts = showExcluded ? products : products.filter(p => !p.is_ad && !p.is_catalog)
+  // 기본: 광고만 제외, 카탈로그는 포함. 토글 시 광고도 표시
+  const displayProducts = showAds ? products : products.filter(p => !p.is_ad)
   const normalProducts = products.filter(p => !p.is_ad && !p.is_catalog)
   const adCount = products.filter(p => p.is_ad).length
   const catalogCount = products.filter(p => p.is_catalog).length
@@ -138,8 +189,13 @@ export default function ResultsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold">&quot;{run?.keyword}&quot; 분석 결과</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            전체 {products.length}개 수집 → 광고 {adCount}개 · 카탈로그 {catalogCount}개 제외 → 일반 셀러 {normalProducts.length}개
+            네이버 원본 1~{products.length}위 스캔 → 광고 {adCount}개 · 카탈로그 {catalogCount}개 제외 → 일반 셀러 {normalProducts.length}개
           </p>
+          {normalProducts.length > 0 && normalProducts[0].original_rank > 1 && (
+            <p className="text-xs text-amber-600 mt-0.5">
+              ※ 첫 일반 셀러가 원본 {normalProducts[0].original_rank}위 — 앞 {normalProducts[0].original_rank - 1}개가 광고·카탈로그로 채워짐
+            </p>
+          )}
         </div>
 
         {/* 요약 카드 */}
@@ -170,9 +226,30 @@ export default function ResultsPage() {
           </Card>
         </div>
 
-        <Tabs defaultValue="products">
+        {/* 2단계 분석 버튼 */}
+        {selectedIds.size > 0 && (
+          <div className="mb-4 flex items-center gap-3">
+            <Button
+              onClick={handleStep2}
+              disabled={step2Loading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            >
+              {step2Loading
+                ? `분석 중... (${selectedIds.size}개)`
+                : `2단계 분석 시작 — 선택 ${selectedIds.size}개`}
+            </Button>
+            {step2Error && (
+              <span className="text-sm text-red-500">{step2Error}</span>
+            )}
+          </div>
+        )}
+
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="mb-4">
-            <TabsTrigger value="products">상품 비교표</TabsTrigger>
+            <TabsTrigger value="products">1단계 · 상품 비교표</TabsTrigger>
+            <TabsTrigger value="step2" disabled={step2Analyses.length === 0}>
+              2단계 · 상세 분석{step2Analyses.length > 0 ? ` (${step2Analyses.length})` : ''}
+            </TabsTrigger>
             <TabsTrigger value="recommend">AI 상품명 추천</TabsTrigger>
           </TabsList>
 
@@ -181,10 +258,10 @@ export default function ResultsPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between py-3">
                 <CardTitle className="text-base">
-                  {showExcluded ? `전체 ${products.length}개` : `일반 셀러 ${normalProducts.length}개`}
+                  {showAds ? `전체 ${products.length}개` : `광고 제외 ${displayProducts.length}개`}
                 </CardTitle>
-                <Button variant="outline" size="sm" onClick={() => setShowExcluded(!showExcluded)}>
-                  {showExcluded ? '일반 셀러만 보기' : '제외 상품 포함 보기'}
+                <Button variant="outline" size="sm" onClick={() => setShowAds(!showAds)}>
+                  {showAds ? '광고 숨기기' : `광고 ${adCount}개 포함 보기`}
                 </Button>
               </CardHeader>
               <CardContent className="p-0">
@@ -197,7 +274,7 @@ export default function ResultsPage() {
                         <TableHead>상품명</TableHead>
                         <TableHead className="w-28">가격</TableHead>
                         <TableHead className="w-28">쇼핑몰</TableHead>
-                        <TableHead className="w-20">상태</TableHead>
+                        <TableHead className="w-20 text-center">[선택]</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -208,7 +285,7 @@ export default function ResultsPage() {
                           </TableCell>
                         </TableRow>
                       ) : displayProducts.map(p => (
-                        <TableRow key={p.id} className={p.is_ad || p.is_catalog ? 'opacity-40 bg-gray-50' : ''}>
+                        <TableRow key={p.id} className={p.is_ad ? 'opacity-40 bg-gray-50' : p.is_catalog ? 'bg-blue-50/40' : ''}>
                           <TableCell className="font-medium">
                             {p.effective_rank ?? <span className="text-gray-300">—</span>}
                           </TableCell>
@@ -222,9 +299,6 @@ export default function ResultsPage() {
                             ) : (
                               <span className="text-sm leading-snug">{p.title}</span>
                             )}
-                            {p.exclusion_reason && (
-                              <p className="text-xs text-red-400 mt-0.5">{p.exclusion_reason}</p>
-                            )}
                           </TableCell>
                           <TableCell className="text-sm">
                             {p.price ? `${p.price.toLocaleString()}원` : '—'}
@@ -232,12 +306,21 @@ export default function ResultsPage() {
                           <TableCell className="text-sm text-muted-foreground">
                             {p.raw_payload?.mallName || '—'}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="text-center">
                             {p.is_ad
                               ? <Badge variant="destructive">광고</Badge>
-                              : p.is_catalog
-                                ? <Badge variant="secondary">카탈로그</Badge>
-                                : <Badge variant="outline" className="text-green-700 border-green-400">일반</Badge>
+                              : (
+                                <button
+                                  onClick={() => toggleSelect(p.id)}
+                                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                                    selectedIds.has(p.id)
+                                      ? 'bg-black text-white border-black'
+                                      : 'border-gray-300 text-gray-500 hover:border-gray-500'
+                                  }`}
+                                >
+                                  {selectedIds.has(p.id) ? '✓ 선택됨' : '선택'}
+                                </button>
+                              )
                             }
                           </TableCell>
                         </TableRow>
@@ -247,6 +330,29 @@ export default function ResultsPage() {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* 2단계 상세 분석 탭 */}
+          <TabsContent value="step2">
+            {step2Loading ? (
+              <Card>
+                <CardContent className="py-12 text-center text-muted-foreground">
+                  <p className="text-lg mb-2">상품 페이지 분석 중...</p>
+                  <p className="text-sm">각 상품 페이지 접근 및 AI 분석 중입니다. 잠시 기다려주세요.</p>
+                </CardContent>
+              </Card>
+            ) : step2Analyses.length > 0 ? (
+              <ProductAnalysisTable
+                analyses={step2Analyses}
+                keyword={run?.keyword ?? ''}
+              />
+            ) : (
+              <Card>
+                <CardContent className="py-10 text-center text-muted-foreground text-sm">
+                  1단계에서 상품을 선택한 뒤 &quot;2단계 분석 시작&quot; 버튼을 눌러주세요.
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           {/* AI 추천 탭 */}

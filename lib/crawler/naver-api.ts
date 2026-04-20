@@ -45,7 +45,10 @@ export async function fetchNaverShoppingApi(
     )
   }
 
-  const display = 100 // 카탈로그 제외 후 topN개 확보를 위해 최대치 요청
+  // 스캔 상한: topN*3 이하, 최대 40위까지만 탐색
+  // 그 안에서 못 채워도 그대로 반환 — 너무 뒷단 상품은 의미 없음
+  const maxScanRange = Math.min(topN * 3, 40)
+  const display = maxScanRange
   const url = `https://openapi.naver.com/v1/search/shop.json?query=${encodeURIComponent(keyword)}&display=${display}&sort=sim`
 
   const res = await fetch(url, {
